@@ -1,5 +1,4 @@
 <Project>
-
   <!--
     Central package management: every NuGet version is declared once, here.
     Projects reference packages by name only, so versions can't drift between projects.
@@ -7,9 +6,8 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
-
   <ItemGroup>
+    <PackageVersion Include="Shouldly" Version="4.3.0" />
     <PackageVersion Include="xunit.v3.mtp-v2" Version="4.0.1" />
   </ItemGroup>
-
 </Project>

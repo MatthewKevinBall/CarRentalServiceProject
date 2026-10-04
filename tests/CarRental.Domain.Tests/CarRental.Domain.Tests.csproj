@@ -4,4 +4,8 @@
     <ProjectReference Include="..\..\src\CarRental.Domain\CarRental.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Shouldly" />
+  </ItemGroup>
+
 </Project>
