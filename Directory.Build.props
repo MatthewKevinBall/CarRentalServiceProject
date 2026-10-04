@@ -1,0 +1,19 @@
+<Project>
+
+  <!--
+    MSBuild auto-imports the nearest Directory.Build.props above each project,
+    so these settings apply to every project in the repo.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Warnings are bugs we haven't met yet: fail the build instead of scrolling past them. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Make the build honour .editorconfig style rules, not just the IDE. -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+</Project>

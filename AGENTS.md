@@ -13,6 +13,7 @@ This is a **learning project**. The developer is an experienced PHP/JavaScript d
 - When possible, pass terminal commands to the user to run themselves
 - Call out C# behaviour that differs from PHP/JS whenever it appears (see "Traps to flag" below).
 - Keep code human-readable and maintainable over clever.
+- We can stay on the main branch for development as it's sequential
 
 ## The workflow (mandatory for every phase)
 
@@ -41,7 +42,7 @@ Summary:
 | Front end | Razor Pages (in `CarRental.Web`) |
 | Database | PostgreSQL in Docker, EF Core + Npgsql; Testcontainers for integration tests |
 | Runtime | .NET 10 |
-| Tests | xUnit + Shouldly (not FluentAssertions) + NSubstitute for mocks |
+| Tests | xUnit v3 (Microsoft.Testing.Platform runner) + Shouldly (not FluentAssertions) + NSubstitute for mocks |
 | Build settings | Nullable enabled, warnings as errors, central package management |
 | Editor | JetBrains Rider (give Rider-specific tips where useful; always show the equivalent `dotnet` CLI command too) |
 
