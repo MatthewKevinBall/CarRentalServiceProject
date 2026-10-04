@@ -5,7 +5,7 @@ The domain model holds the business rules from [user-stories.md](user-stories.md
 | # | Concept | Status |
 |---|---|---|
 | 1.1 | `DateRange` | ✅ Done |
-| 1.2 | `City` | — |
+| 1.2 | `City` | ✅ Done |
 | 1.3 | `Car` | — |
 | 1.4 | Pricing | — |
 | 1.5 | `Booking` | — |
@@ -88,3 +88,72 @@ Red → green sequence:
   - **Method overloading:** `October(int)` returns a `DateOnly`; `October(int, int)` returns a `DateRange`. The compiler picks one by the arguments.
   - **Target-typed `new(...)`:** the compiler infers the type from the method's return type.
   - **xUnit creates a new test-class instance for every test,** so instance state is never shared between tests. Helpers that use no state are `static`.
+
+---
+
+## 1.2 `City`
+
+**Files:** `src/CarRental.Domain/City.cs`, `tests/CarRental.Domain.Tests/CityTests.cs`
+
+### What it is
+
+One of the cities we operate in: where a car is based (`HomeCity`, `CurrentCity`) and where a rental starts and ends (`PickupCity`, `DropOffCity`). It's a **"smart enum"**: a `sealed record` with a private constructor and a fixed set of static instances.
+
+| Member | Behaviour |
+|---|---|
+| `City.Auckland`, `City.Wellington`, `City.Christchurch` | The only `City` instances that exist |
+| `Code` | Stable identifier for the database and URLs: `AKL`, `WLG`, `CHC` (NZ airport codes) |
+| `Name` | Display name |
+| `City.All` | All cities (read-only), for the search form's dropdown |
+| `City.FromCode(string code)` | Turns a code into a `City`. **Case-insensitive** (`"akl"` → Auckland); throws `ArgumentException` for an unknown code; matches codes only, never names |
+
+### Design decisions
+
+| Decision | Chosen | Alternatives rejected | Why |
+|---|---|---|---|
+| Representation | Smart-enum `sealed record` | `enum`, database entity, `string` | See the table below |
+| Identifier | Short code, separate from the display name | Store the name | The display name can change ("Ōtautahi Christchurch") without rewriting saved bookings |
+| Case sensitivity | Case-insensitive `FromCode` | Exact match | A city doesn't change based on case, and URLs / form values are often lower-cased |
+| Unknown code | Throw `ArgumentException` | `TryFromCode(string, out City?)` now | Nothing passes untrusted input yet. The `Try…` pattern comes in Phase 4/5 when web input needs it |
+| Time zone | **Not** on `City` | `TimeZoneInfo` property per city | All three cities share NZ time. One business time zone (`Pacific/Auckland`) is used for "today" in Phase 2. It moves onto `City` if a city in another zone opens |
+
+### Choosing a representation
+
+| Option | Pros | Cons |
+|---|---|---|
+| `enum City { Auckland, … }` | Simplest; `switch` works naturally; EF Core stores it with no setup | **A C# enum is a named `int`**: `(City)42` compiles and runs, and `default(City)` silently becomes `Auckland` (value `0`). Can't carry a code or name |
+| **Smart-enum record** ✅ | Private constructor → only valid instances exist. Carries data. Value equality | Slightly more code; EF Core needs a value converter in Phase 3 |
+| Database entity | Staff could add cities without a deploy | Needs admin screens (out of scope); the domain could no longer refer to `City.Auckland`; makes Phase 1 depend on persistence |
+| `string` | No code at all | `"Auckland"`, `"auckland "` and `"Aukland"` would all be different cities ("primitive obsession") |
+
+Plain enums still have a place: the driver's licence type (Learner / Restricted / Full) is a closed set of labels with no data attached, which suits an enum.
+
+### How the tests were designed
+
+- **`All_ContainsExactlyTheThreeStarterCities`** encodes the business rule, and would catch the static-initialisation-order trap (below) at test time.
+- **`All_HaveUniqueCodes`** protects future additions: copying the Auckland line for a new city and forgetting to change `"AKL"` fails the build's tests. It upper-cases the codes first, because codes are case-insensitive.
+- **`FromCode_WithUnknownCode_Throws` includes `"Auckland"`**, pinning down that `FromCode` matches codes and never names.
+- **`FromCode_ReturnsCityEqualToStaticInstance`** states the requirement it supports: the one-way pricing rule compares cities that may have been obtained in different ways (a static instance vs a code from a form or database).
+
+Red → green sequence:
+
+1. Tests written → compile error **CS0246**: `City` not found.
+2. Stub (everything throws `NotImplementedException`) → the 10 City tests fail; the 16 `DateRange` tests still pass.
+3. Implementation → all pass. The `[MemberData]` theory now shows as 3 rows instead of 1 (see lesson below).
+
+### C# lessons learned
+
+- **C# enums are named integers**, unlike PHP 8.1 enums, which are real types. Any `int` can be cast to an enum, and the default value is `0`.
+- **Static field initialisers run in source order.** Declaring `All` above the three cities would capture `null`s. In this project the **compiler catches it** (CS8601: possible null reference assignment), because nullable analysis is on and warnings are errors. We proved it by moving the line. Without `<Nullable>enable</Nullable>`, it compiles and fails at runtime.
+- **`static` means shared by every request and user for the whole process lifetime.** That's fine for immutable objects like `City`; dangerous for anything mutable. This comes back with DI lifetimes in Phase 2.
+- **`public static readonly` fields** are the accepted exception to "no public fields" for constant-like objects (as with `string.Empty` and `TimeSpan.Zero`).
+- **Private constructor on a record** turns it into a smart enum: no outside code can create new instances.
+- **`IReadOnlyList<T>` + a collection expression** gives a list callers can read but not modify.
+- **`FirstOrDefault(…) ?? throw …`.** `FirstOrDefault` is like JS `.find()` and returns `City?`. The throw expression turns "not found" into an exception and gives the compiler a non-null `City`, with no need for `!`.
+- **Compare identifiers with `StringComparison.OrdinalIgnoreCase`,** not `ToLower()`. It doesn't depend on culture and doesn't create new strings. When you do need to change case, use `ToUpperInvariant()`. The culture-sensitive `ToUpper()` has the "Turkish I" problem (`"i"` → `"İ"`).
+- **Test-side features:**
+  - **`[MemberData]` + `TheoryData<T1, T2>`** supplies theory rows that aren't compile-time constants (like `City` instances). It's the second workaround for the `[InlineData]` constants rule.
+  - **Collection initializer** `new() { { "AKL", City.Auckland }, … }`: each inner `{ … }` becomes a call to `Add`.
+  - **Collection expression** `[a, b, c]` (C# 12): the compiler builds whatever collection type is expected.
+  - **LINQ `Select`** works like JS `.map()` but is **deferred**: it only runs when something reads the results. More on this in Phase 2.
+  - **A theory whose data throws runs as a single test.** In the stub run, building the `TheoryData` threw `NotImplementedException`, so xUnit fell back to one test instead of three rows. xUnit v3 runs tests in the same process it discovers them in, so `City` doesn't need to be serialisable for the rows to show separately. (We first guessed serialisation was the cause, and corrected it after checking the test counts.)
