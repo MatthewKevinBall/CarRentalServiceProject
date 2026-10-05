@@ -16,7 +16,7 @@ The agreed behaviour of the system. Every domain rule we implement should trace 
 | Booking options | A specific car, a car type, or "any available" |
 | "Any available" price | Always the Standard rate, whatever type of car is assigned |
 | Car assignment | A real car is assigned at booking time, for every booking option |
-| Deposit | 10% of the rental price (excluding the one-way fee), added on top |
+| Deposit | 10% of the rental price (excluding the one-way fee), added on top. Any fraction of a cent is rounded **up**: $16.481 → $16.49 |
 | One-way rental | Drop-off in a different city costs an extra $100 |
 | Car location | Each car has a *home city* and a *current city* |
 | Cleaning break | 1 full day after a return-to-home-city rental: returned on the 13th → next pickup the 15th at the earliest |

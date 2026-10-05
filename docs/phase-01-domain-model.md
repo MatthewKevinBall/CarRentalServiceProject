@@ -7,7 +7,7 @@ The domain model holds the business rules from [user-stories.md](user-stories.md
 | 1.1 | `DateRange` | ✅ Done |
 | 1.2 | `City` | ✅ Done |
 | 1.3 | `Car` (with `CarType`, `Registration`) | ✅ Done |
-| 1.4 | Pricing | — |
+| 1.4 | Pricing (`Money`, `PriceList`, `PriceQuote`) | ✅ Done |
 | 1.5 | `Booking` | — |
 
 ---
@@ -278,3 +278,109 @@ Red → green sequence:
   - **Named arguments** (`CreateCar(model: "")`) let each test change only the detail it's about.
   - **Enum values are constants,** so `[InlineData((CarType)42)]` is allowed.
 - **Check that a test can fail.** Two of our edge-case tests looked equally convincing; putting the bug back showed one of them could never fail.
+
+---
+
+## 1.4 Pricing (`Money`, `PriceList`, `PriceQuote`)
+
+**Files:** `src/CarRental.Domain/Money.cs`, `PriceList.cs`, `PriceQuote.cs`; `tests/CarRental.Domain.Tests/MoneyTests.cs`, `PriceListTests.cs`
+
+### The rules (from the user stories)
+
+| Rule | Value |
+|---|---|
+| Rental price | Daily rate × days |
+| Daily rate | By car type (agreed: Economy $55, Standard $75, SUV $105, Premium $140) |
+| One-way fee | +$100 when the drop-off city ≠ the pickup city |
+| Deposit | 10% of the rental price (**not** the one-way fee), any fraction of a cent rounded **up** |
+| Total | Rental price + one-way fee + deposit |
+
+Worked example: SUV, Auckland → Wellington, 3 days = $315.00 + $100.00 + $31.50 = **$446.50**.
+
+### What was built
+
+**`Money`: a `readonly record struct`.** An amount of NZD in whole cents, never negative.
+
+| Member | Behaviour |
+|---|---|
+| `Money(decimal amount)` | Rejects negatives (`ArgumentOutOfRangeException`) and fractions of a cent (`ArgumentException`) |
+| `Amount`, `Money.Zero` | The value; $0.00 |
+| `+` | Adds two amounts |
+| `* int` | Multiplies by a whole number (rate × days) |
+| `PercentageRoundedUp(decimal percent)` | e.g. 10% of $164.81 = $16.481 → **$16.49** |
+
+**`PriceList`.** The business's prices (4 daily rates, a one-way fee, a deposit percentage), supplied from outside the domain. It rejects a $0 daily rate and a deposit percentage outside 0–100.
+
+`Quote(CarType chargedType, DateRange period, City pickupCity, City dropOffCity)` returns a `PriceQuote`; it throws for an undefined car type.
+
+**`PriceQuote`: a `sealed record` with an `internal` constructor.** The US2 breakdown: `DailyRate`, `Days`, `RentalPrice`, `OneWayFee`, `Deposit`, and a calculated `Total`. Only `PriceList.Quote` can create one.
+
+### Design decisions
+
+| Decision | Chosen | Alternatives rejected | Why |
+|---|---|---|---|
+| Number type | `decimal` | `double` | `0.1 + 0.2 != 0.3` in binary floating point (`double`, and every JS number); `decimal` stores base-10 digits exactly |
+| Where prices live | A `PriceList` object, numbers supplied from outside | Hard-coded in a `switch` | Price changes shouldn't need a deploy (config arrives in Phase 4). Tests build their own price lists, so they don't break when prices change. The real prices appear in exactly one test: the user-story example |
+| Money representation | A `Money` type, **chosen as a teaching exercise** | Plain `decimal` | With one currency and no extra rules, plain `decimal` would also have been reasonable. `Money` earns its keep by guaranteeing whole cents and making rounding explicit |
+| `Money` kind | `readonly record struct` | `sealed record` (class) | Small, immutable, and `default(Money)` is $0.00, a valid amount, so the struct's skipped-constructor problem doesn't apply |
+| Currency field | None (NZD implied) | `string Currency` | A reference-type field in a struct is `null` in `default(Money)`. Revisit if a second currency arrives |
+| Rounding | **Always up** to the cent (ceiling) | Nearest cent ("school" rounding); banker's rounding (`Math.Round`'s default) | Product-owner decision: the business never under-collects |
+| Sub-cent amounts | Impossible: `Money` rejects them | Allow, round at display time | Every amount is exact cents, so the only rounding happens in one method whose name says so |
+| Result shape | `PriceQuote` breakdown with a calculated `Total` | A single `decimal` total | US2 shows every line; a calculated total can't disagree with them |
+| Who creates quotes | `internal` constructor; only `PriceList.Quote` | Public constructor | Nobody outside the domain can make up a quote with an inconsistent deposit |
+| Where `Quote` lives | A method on `PriceList` | A separate `PricingCalculator`; a static helper | The data and the behaviour that uses it sit together |
+| "Any available" → Standard rate | Deferred to `Booking` (1.5) | Inside pricing | The idea of a *selection* (specific car / type / any) is born in `Booking`. `Quote` takes the type to charge |
+| 1–30 day limit | Not in pricing | Validating in `Quote` | It's a rental rule (`Booking`). Pricing will quote any `DateRange` |
+
+### How the tests were designed
+
+Price-list tests use **made-up, distinct rates** (10/20/30/40, fee 7), so a wrong lookup shows immediately and the tests don't depend on real prices. One test uses the real agreed prices to check the user-story example.
+
+| Test | Wrong code it catches |
+|---|---|
+| Whole cents accepted, including **`16.500m`** | Rejecting zero; checking `decimal.Scale` instead of the value |
+| Fractions of a cent / negatives rejected | Missing checks |
+| `+`, `* int` | Operator code returning the wrong value |
+| `PercentageRoundedUp`: $164.81 → **$16.49** | Rounding to the nearest cent ($16.48); banker's rounding; rounding to whole dollars |
+| A zero rate rejected, once per car type | Forgetting to validate one of the four rates |
+| Deposit % of −1 / 101 rejected, 0 / 100 accepted | Off-by-one boundaries |
+| `DailyRate` is the charged type's rate (all 4 types) | Swapped arms in the `switch` |
+| Undefined car type rejected | A fallback that quietly charges the Economy rate |
+| Rental price = rate × days | Off-by-one days; rental price equal to the daily rate |
+| One-way fee charged / not charged (drop-off city from `City.FromCode("akl")`) | Fee always or never applied. **This is where city equality is tested**, through the behaviour that depends on it |
+| Deposit is 10% of the rental only ($9, not $9.70) | Deposit calculated on rental + fee |
+| `Quote`'s deposit rounds up | `Quote` doing its own rounding |
+| Total = 90 + 7 + 9 = 106 | A line missing from the total |
+| User-story example = $446.50 | Anything wrong, with the real prices |
+
+Red → green sequence:
+
+1. Tests written → compile error **CS0246**: `Money`, `PriceList`, `PriceQuote` not found.
+2. Stubs → **33 failed**; the 53 existing tests still passed.
+3. Implementation → **all 88 passed** (86 Domain + 2 placeholders).
+4. **Each tricky test was checked by putting its bug back.** All were caught:
+
+| Bug put back | Caught by |
+|---|---|
+| Rounding to the nearest cent | The $164.81 rows (`Money` and `Quote`) |
+| `amount.Scale > 2` instead of comparing values | The `16.500m` row |
+| Deposit on rental + one-way fee | Deposit, total and user-story tests |
+| SUV charged at the Premium rate | The SUV row of the rate theory, plus dependent tests |
+| `switch` without the `_ =>` arm | The **compiler**: CS8524 |
+
+### C# lessons learned
+
+- **`decimal` for money.** `0.1 + 0.2 == 0.3` is `false` for `double` and `true` for `decimal`. Decimal literals need the `m` suffix: `decimal rate = 55.99;` is a compile error (CS0664).
+- **`decimal` keeps trailing zeros.** `16.5m == 16.500m`, but their *scale* (number of stored decimal places) differs, and `ToString()` prints `16.500`. Check precision by comparing values (`decimal.Round(x, 2) != x`), never by `Scale`.
+- **Rounding modes.**
+  - `Math.Round` / `decimal.Round` default to **banker's rounding** (`ToEven`): 16.485 → 16.48. Always pass a `MidpointRounding` explicitly for money.
+  - ⚠️ `MidpointRounding.ToPositiveInfinity`, `ToNegativeInfinity` and `ToZero` are **not** midpoint rules, despite the enum's name. They always round in one direction. `ToPositiveInfinity` is ceiling.
+- **Operator overloading.** `public static Money operator +(Money, Money)` defines `+` for our type (not possible for user classes in PHP, or at all in JS). Operators aren't automatically symmetric: `Money * int` doesn't give you `int * Money`. Leaving out `Money * decimal` was deliberate, so all fractional multiplication goes through the method that says how it rounds.
+- **`readonly record struct`** gives value semantics, value equality, and immutability. Use an explicit constructor + `{ get; }` rather than a positional record, so `with` can't skip validation.
+- **Switch expressions** (`x switch { A => …, _ => … }`) return values, like PHP 8's `match`. On an enum, the compiler **requires** a catch-all (CS8524), because any integer could arrive. But that same catch-all silences any warning when a new enum value is added later, so search for `switch`es whenever you add one.
+- **`internal`** means visible within the same project (assembly) only. An `internal` constructor means other layers, and the test project, can't create the type; only domain code can.
+- **Built-in numeric guards:** `ArgumentOutOfRangeException.ThrowIfNegative`, `ThrowIfZero` and `ThrowIfGreaterThan` (.NET 8+) work for any numeric type via *generic math*.
+- **Calculated properties** (`public Money Total => …`) can't get out of sync with what they're calculated from.
+- **Test-side features:**
+  - **`decimal` can't go in attributes**, so decimal theory rows use `TheoryData<decimal>`. Yet `decimal` *can* be an optional parameter's default (`decimal economy = 10m`): two different "constant" rules.
+  - **`int` → `decimal` converts automatically** (no information lost), so `[InlineData]` rows of `int`s can feed `decimal` parameters. The reverse needs an explicit cast.
