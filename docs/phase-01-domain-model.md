@@ -8,7 +8,8 @@ The domain model holds the business rules from [user-stories.md](user-stories.md
 | 1.2 | `City` | ✅ Done |
 | 1.3 | `Car` (with `CarType`, `Registration`) | ✅ Done |
 | 1.4 | Pricing (`Money`, `PriceList`, `PriceQuote`) | ✅ Done |
-| 1.5 | `Booking` | — |
+| 1.5a | Driver (`Driver`, `DriverLicence`, `LicenceType`, `EmailAddress`) | ✅ Done |
+| 1.5b | `Booking` | — |
 
 ---
 
@@ -384,3 +385,86 @@ Red → green sequence:
 - **Test-side features:**
   - **`decimal` can't go in attributes**, so decimal theory rows use `TheoryData<decimal>`. Yet `decimal` *can* be an optional parameter's default (`decimal economy = 10m`): two different "constant" rules.
   - **`int` → `decimal` converts automatically** (no information lost), so `[InlineData]` rows of `int`s can feed `decimal` parameters. The reverse needs an explicit cast.
+
+---
+
+## 1.5a Driver (`Driver`, `DriverLicence`, `LicenceType`, `EmailAddress`)
+
+**Files:** `src/CarRental.Domain/Driver.cs`, `DriverLicence.cs`, `LicenceType.cs`, `EmailAddress.cs`; `tests/CarRental.Domain.Tests/DriverTests.cs`, `DriverLicenceTests.cs`, `EmailAddressTests.cs`
+
+`Booking` was split into two cycles: **1.5a Driver** (who is driving) and **1.5b Booking** (the rental itself), to keep each cycle a manageable size.
+
+### What was built
+
+| Type | Kind | Rules |
+|---|---|---|
+| `LicenceType` | `enum` | `Learner = 1`, `Restricted = 2`, `Full = 3`. Starts at 1 so `default` isn't a real type |
+| `DriverLicence` | `sealed partial record` | `Number`: NZ format, 2 letters + 6 digits (lower case accepted, stored upper case). `Type`: must be defined. `ExpiryDate`: the last valid day. Any licence stage is accepted |
+| `DriverLicence.PermitsRentalUntil(DateOnly returnDate)` | method | `true` only for a **full** licence whose expiry is **on or after** the return date |
+| `EmailAddress` | `sealed record` | Email-shaped only: text before an `@` and text after it. Stored exactly as entered |
+| `Driver` | `sealed record` | `FullName` (as on the licence; not blank, at most 100 characters), `Email`, `Licence` |
+
+Every text input rejects leading/trailing whitespace (see "Strict domain" below).
+
+### Design decisions
+
+| Decision | Chosen | Alternatives rejected | Why |
+|---|---|---|---|
+| Learner / restricted licences | **Valid data**; rejected only for renting, via `PermitsRentalUntil` | Constructor rejects non-full licences | "Is this a well-formed licence?" and "does it allow renting until the return date?" are different questions. The second needs the rental dates, which a licence doesn't know. `Booking` (1.5b) decides what a `false` means |
+| Expiry on the return date | Accepted (`>=`) | Rejected (`>`) | The user story rejects a licence that expires *before* the return date |
+| `Driver` | Value object (`record`) | Entity (`Customer` with an ID) | No customer accounts: a driver is just "who is driving, for this booking". The same person booking twice is two sets of details. A `Customer` entity would arrive with accounts |
+| Name | One `FullName`, as on the licence | `PersonName` with given/family names | A single value with simple rules and no derived behaviour (the five questions say: a validated string). Given/family order varies across cultures, and some people have one name |
+| Email checks | Email-shaped only | Dot in the domain, 254-character limit; `System.Net.Mail.MailAddress` | Product-owner decision: no emails are sent, so a correct address is the customer's responsibility. `MailAddress` parses mail *headers* and accepts display-name forms like `Bob <bob@example.com>` |
+| Email case | Stored as entered | Lower-cased | The part before `@` is technically case-sensitive |
+| Licence number format | NZ: 2 letters + 6 digits | Free text | Product-owner confirmed |
+| Surrounding whitespace | **Rejected** everywhere | Trimmed in the domain | Project-wide rule (now in `AGENTS.md`): **strict domain, forgiving web layer**. The Razor form (Phase 5) trims input before calling the domain |
+| Shared "no surrounding whitespace" helper | Not extracted (2 copies) | Extract now | Rule of three: extract on the third copy, once the real pattern is visible |
+| `private static readonly` field naming (test code) | `_camelCase`, per our `.editorconfig` | `PascalCase`; the runtime's `s_camelCase` | Followed the existing rule, which the build enforced (IDE1006). Teams genuinely differ here; changing it is a one-line `.editorconfig` edit |
+
+### How the tests were designed
+
+| Test | Wrong code it catches |
+|---|---|
+| Licence number stored upper case | Not normalising case |
+| 14 invalid licence numbers | Checking only the length; letters and digits in any order; `$` instead of `\z`; `char.IsLetter` (`Ä`); upper-casing before validating (`ſ`); **`\d` instead of `[0-9]`** (Arabic-Indic digits) |
+| Undefined `LicenceType` rejected | No `Enum.IsDefined` check |
+| Learner / Restricted **accepted** by the constructor | Mixing "valid licence" with "allowed to rent" |
+| Full licence expiring after / **on** / the day before the return date | `>` instead of `>=` |
+| Learner / Restricted don't permit renting | Checking the expiry but forgetting the type |
+| Email kept exactly as entered (`Jane.Smith@Example.com`) | Lower-casing |
+| `a@b` accepted | Checks beyond the agreed rule |
+| No `@`, nothing before or after it | `Contains('@')` alone |
+| Edge spaces rejected (email, name) | `Trim()` instead of rejecting |
+| Blank name rejected | `IsNullOrEmpty` instead of `IsNullOrWhiteSpace` |
+| Name of 100 accepted, 101 rejected | Off-by-one (`>=`) |
+
+Red → green sequence:
+
+1. Tests written. The compile check against temporary stand-in types failed on **IDE1006** in the *test* code: a `private static readonly` field named `ReturnDate` broke our `_camelCase` rule. Renamed to `_returnDate`.
+2. While planning the implementation, `\d` was spotted as a trap, so an Arabic-Indic-digits test case was **added before any code**.
+3. Stubs → **41 failed**; the 86 existing tests still passed.
+4. Implementation → **all 129 passed** (127 Domain + 2 placeholders).
+5. **Each tricky test was checked by putting its bug back.** All were caught:
+
+| Bug put back | Caught by |
+|---|---|
+| `\d` instead of `[0-9]` | The Arabic-Indic digits case |
+| `>` instead of `>=` on expiry | The "expires on the return date" row |
+| Licence-type check forgotten | The Learner and Restricted rows |
+| Email: `Contains('@')` only | `@example.com`, `jane@` |
+| Name: `>=` instead of `>` | The exactly-100-characters test |
+
+### C# lessons learned
+
+- **Valid data vs permitted action.** Constructors check that data is well formed; business permissions that depend on context (like rental dates) are methods, called by whoever has that context.
+- **Regex shorthand classes are Unicode-aware in .NET.** `\d` matches any Unicode digit (`١٢٣`, `१२३`, …), and `\w` matches accented and non-Latin letters. When a rule means ASCII, spell it out: `[0-9]`, `[A-Za-z]`.
+- **`T?` means two different things.**
+  - On a value type, `DateOnly?` is `Nullable<DateOnly>`: a real wrapper struct with `HasValue` / `Value`.
+  - On a reference type, `City?` is only a hint to the compiler's null analysis.
+- **`string ==` compares contents.** `string` is a reference type, but it defines `==` to compare characters (as `Money` defines `+`).
+- **`Trim()` with no arguments removes all Unicode whitespace**, which makes `value != value.Trim()` a good "has surrounding whitespace" check.
+- **Explaining variables.** `var hasTextBeforeAndAfterAt = atIndex > 0 && atIndex < value.Length - 1;` turns index arithmetic into a readable rule.
+- **Separate guard clauses, separate messages.** Blank, edge whitespace and too-long are checked separately, so the error says *what* is wrong.
+- **A record made of records** gets deep value equality automatically (not tested: that's C#).
+- **`new string('a', 101)`** repeats a character, like PHP's `str_repeat`.
+- **The `.editorconfig` applies to test code too.** It caught a naming inconsistency before any test ran.

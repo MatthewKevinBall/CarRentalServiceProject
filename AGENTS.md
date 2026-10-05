@@ -88,6 +88,7 @@ CarRental.sln
 - Use `decimal` for money, `DateOnly` for rental dates, `DateTimeOffset` for timestamps. Never `double` for money or naive `DateTime` for instants.
 - Prefer immutability: `record` / `init` for value objects; entities protect invariants via constructors and methods, not public setters.
 - Validate invariants in the domain; throw meaningful exceptions (or return results, as decided per phase) rather than allowing invalid state.
+- **Strict domain, forgiving web layer.** Domain types reject text with leading/trailing whitespace rather than silently trimming it. User-friendliness (trimming form input, friendly messages) belongs in the web layer, before the domain is called.
 - Async all the way: no `.Result` / `.Wait()`. Accept a `CancellationToken` on async Application/Infrastructure methods.
 - No compiler warnings (warnings are errors). Don't suppress nullable warnings with `!` without explaining why.
 - Comments explain *why*, not *what*.
