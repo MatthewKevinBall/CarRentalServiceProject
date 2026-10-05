@@ -56,15 +56,4 @@ public class CityTests
     {
         Should.Throw<ArgumentException>(() => City.FromCode(code));
     }
-
-    [Fact]
-    public void FromCode_ReturnsCityEqualToStaticInstance()
-    {
-        // The one-way pricing rule compares pickup and drop-off cities, which may arrive
-        // via different routes (a static instance vs a code loaded from a form or database).
-        var fromCode = City.FromCode("AKL");
-
-        (fromCode == City.Auckland).ShouldBeTrue();
-        (fromCode == City.Wellington).ShouldBeFalse();
-    }
 }

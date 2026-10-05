@@ -6,7 +6,7 @@ The domain model holds the business rules from [user-stories.md](user-stories.md
 |---|---|---|
 | 1.1 | `DateRange` | ✅ Done |
 | 1.2 | `City` | ✅ Done |
-| 1.3 | `Car` | — |
+| 1.3 | `Car` (with `CarType`, `Registration`) | ✅ Done |
 | 1.4 | Pricing | — |
 | 1.5 | `Booking` | — |
 
@@ -61,7 +61,7 @@ blocked = [Start, End + 1 + breakDays)        breakDays = 1 (cleaning) or 7 (rel
 
 ### How the tests were designed
 
-- **No test just reads back a value it set.** The `Days` tests cover the cases naive day maths gets wrong: crossing a month end (30 Oct → 2 Nov) and a leap day (28 Feb → 1 Mar 2028).
+- **No test just reads back a value it set.** The `Days` tests cover the case naive day maths gets wrong: crossing a month end (30 Oct → 2 Nov, where `End.Day - Start.Day` gives −28).
 - **Every overlap case is checked from both sides** (`a.Overlaps(b)` and `b.Overlaps(a)`), so an implementation that only handles one direction can't pass.
 - **The back-to-back cases encode the half-open decision.** If `Overlaps` is ever "fixed" to include the end date, they fail.
 - **`Should.Throw<ArgumentException>` requires that exact type.** In the red run, the stub threw `NotImplementedException` and the constructor tests still failed. That proves they check *which* exception, not just that one occurred.
@@ -71,6 +71,18 @@ Red → green sequence:
 1. Tests written, no `DateRange` exists → **compile error CS0246**. In C#, a missing type is the first "red"; nothing runs until everything the tests reference exists.
 2. A stub with `throw new NotImplementedException()` everywhere → compiles, **16 failed**, each as its own test failure.
 3. The real implementation → **16 passed**.
+
+#### Test review: removing tests that tested C#
+
+After implementation we reviewed every test with one question: *can a plausible wrong implementation of our code make this test fail?* (Now a rule in `AGENTS.md`.) Three tests failed that check and were removed, taking the suite from 16 to 13:
+
+| Removed test | Why |
+|---|---|
+| `Equality_WhenSameDates_AreEqual` | Tested the compiler-generated `record` equality. The only way to fail it is to change `record` to `class`. Nothing in the app compares `DateRange`s with `==`, so no behaviour depends on it |
+| `Equality_WhenDifferentDates_AreNotEqual` | Same: tested the generated `!=` |
+| `Days_WhenRangeCrossesLeapDay_IncludesFebruary29th` | Any implementation that passes the month-end test already uses .NET's calendar maths, so this only tested .NET's handling of leap years |
+
+The equality tests had been written partly to *demonstrate* value equality. Teaching demonstrations now stay in the conversation, never in the test suite.
 
 ### C# lessons learned
 
@@ -133,13 +145,15 @@ Plain enums still have a place: the driver's licence type (Learner / Restricted 
 - **`All_ContainsExactlyTheThreeStarterCities`** encodes the business rule, and would catch the static-initialisation-order trap (below) at test time.
 - **`All_HaveUniqueCodes`** protects future additions: copying the Auckland line for a new city and forgetting to change `"AKL"` fails the build's tests. It upper-cases the codes first, because codes are case-insensitive.
 - **`FromCode_WithUnknownCode_Throws` includes `"Auckland"`**, pinning down that `FromCode` matches codes and never names.
-- **`FromCode_ReturnsCityEqualToStaticInstance`** states the requirement it supports: the one-way pricing rule compares cities that may have been obtained in different ways (a static instance vs a code from a form or database).
+- **City equality is not tested here.** The one-way pricing rule depends on comparing two cities, but that's a pricing behaviour, so it's tested in the pricing tests (1.4). A test `FromCode_ReturnsCityEqualToStaticInstance` existed briefly and was removed in the test review (below).
 
 Red → green sequence:
 
 1. Tests written → compile error **CS0246**: `City` not found.
 2. Stub (everything throws `NotImplementedException`) → the 10 City tests fail; the 16 `DateRange` tests still pass.
 3. Implementation → all pass. The `[MemberData]` theory now shows as 3 rows instead of 1 (see lesson below).
+
+**Test review.** `FromCode_ReturnsCityEqualToStaticInstance` was removed. It checked that `FromCode("AKL")` equals `City.Auckland`, which `FromCode_WithKnownCode_ReturnsThatCity` already checks. Its only extra claim was that the compiler-generated `==` agrees with `Equals`, which is testing C#.
 
 ### C# lessons learned
 
@@ -157,3 +171,110 @@ Red → green sequence:
   - **Collection expression** `[a, b, c]` (C# 12): the compiler builds whatever collection type is expected.
   - **LINQ `Select`** works like JS `.map()` but is **deferred**: it only runs when something reads the results. More on this in Phase 2.
   - **A theory whose data throws runs as a single test.** In the stub run, building the `TheoryData` threw `NotImplementedException`, so xUnit fell back to one test instead of three rows. xUnit v3 runs tests in the same process it discovers them in, so `City` doesn't need to be serialisable for the rows to show separately. (We first guessed serialisation was the cause, and corrected it after checking the test counts.)
+
+---
+
+## 1.3 `Car` (with `CarType` and `Registration`)
+
+**Files:** `src/CarRental.Domain/Car.cs`, `CarType.cs`, `Registration.cs`; `tests/CarRental.Domain.Tests/CarTests.cs`, `RegistrationTests.cs`
+
+### What was built
+
+**`Car`: the first entity.** A car is defined by its identity, not its details: two white Economy Corollas in Auckland are two different cars, and a car stays the same car when its data changes.
+
+| Member | Behaviour |
+|---|---|
+| `Car(Registration, make, model, CarType, City homeCity)` | Rejects blank make/model (`ArgumentException`) and undefined car types (`ArgumentOutOfRangeException`) |
+| `Id` | A new time-ordered `Guid` per car, created in the constructor |
+| `Registration`, `Make`, `Model`, `Type`, `HomeCity` | Fixed at construction |
+| `CurrentCity` | Starts as `HomeCity`; the only property that can change |
+| `RecordArrivalIn(City)` | Changes `CurrentCity`; never `HomeCity` |
+
+**`CarType`: a plain enum.** `Economy = 1`, `Standard = 2`, `Suv = 3`, `Premium = 4`. Daily rates are deliberately not here; they belong to pricing (1.4).
+
+**`Registration`: a value object for NZ number plates.**
+
+| Rule | Example |
+|---|---|
+| 1–6 characters, **spaces count** | `AB 123` ✅, `ABC 123` ❌ |
+| Letters A–Z and digits 0–9 only | `ABC-12` ❌, `ÄBC12` ❌, `ſAB12` ❌ |
+| Single spaces only, and only between characters | `A B C` ✅, `AB  12` ❌, ` AB12` ❌, `AB12 ` ❌, `AB\t12` ❌ |
+| Lower case is accepted and stored upper case | `abc123` → `ABC123` |
+| Spaces are significant | `AB 12` and `AB12` are different plates |
+
+### Design decisions
+
+| Decision | Chosen | Alternatives rejected | Why |
+|---|---|---|---|
+| Identity | `Guid.CreateVersion7()`, created in the constructor | Database-generated `int`; number plate | The car has an ID before any database exists. Version 7 GUIDs are time-ordered, so database indexes stay efficient. Plates change (personalised plates move between cars), so they can't be an identity |
+| Strongly-typed ID (`CarId`) | Not yet | Wrap the `Guid` in a `CarId` type | Prevents mixing up car and booking IDs, but adds mapping code in EF Core. Revisit if `Booking` makes it a real risk |
+| Equality | Plain `sealed class`, reference equality; compare `Id` when needed | `record`; an `Entity` base class that overrides `Equals` | Record equality would make two identical-looking cars "equal", and its hash code would change when `CurrentCity` changes, silently breaking `HashSet`/`Dictionary` lookups. An `Entity` base class is subtle code we don't need yet |
+| Car type | Plain `enum CarType`, values from 1 | Smart enum with a `DailyRate` | A car knows *what* it is; pricing knows what that *costs*. Prices change more often than types, and may move to configuration later |
+| Current city | Stored; changed only via `RecordArrivalIn` | Calculated from bookings; left out | Matches the user stories' "home city and current city", ready for the future "rent onward" feature. Nothing reads it yet |
+| Number plate | `Registration` value object | A validated `string` on `Car` | It has rules (characters, length, spacing) and normalisation (case), which earns a type of its own |
+| Plate edge spaces | **Rejected** | Trimmed | Product-owner decision: callers must send a clean plate |
+| Bookings | `Car` does **not** know its bookings | `car.Book(...)` checking clashes in memory | Loading a car shouldn't load years of bookings, and two simultaneous bookings can only be stopped reliably by the database (Phase 3). Clash checks go in the application layer (Phase 2) |
+
+### Value object or plain properties? (the questions we used)
+
+Extract a value object (record) when **any** of these is true:
+
+1. Do the values belong together (always set and replaced as a unit)?
+2. Is there a rule to enforce?
+3. Is there behaviour derived from the values?
+4. Does the business have a word for it?
+5. Is it used by more than one entity? (A bonus, not a requirement.)
+
+Keep plain properties when it's a single independent value with no rules: `Make` and `Model` are plain strings. A value object still *belongs to* its entity, and in Phase 3 EF Core can store it as columns in the entity's own table, so modelling it separately doesn't mean a separate table.
+
+### How the tests were designed
+
+Every test was checked against the `AGENTS.md` heuristic: **would a plausible wrong implementation of our code fail it?**
+
+| Test | Wrong code it catches |
+|---|---|
+| Blank make / model rejected (`""`, `"   "`) | Checking for empty but not whitespace-only strings |
+| Undefined `CarType` rejected (`0`, `42`) | No check; an enum starting at `0`, so `default` becomes a real type |
+| Each car gets its own ID | `Id` never set (both `Guid.Empty`); a hard-coded ID |
+| New car's current city is its home city | Forgetting to set `CurrentCity` (it would be `null` despite the nullable checks) |
+| `RecordArrivalIn` changes current city / doesn't change home city | A method that does nothing, or changes the wrong property |
+| Plate normalised to upper case, spaces kept | Removing spaces, which would quietly make `AB 12` and `AB12` the same plate |
+| Plate boundaries (`HELLO1`, `AB 123` ✅ / `ABC1234`, `ABC 123` ❌) | Off-by-one length checks; not counting spaces |
+| `AB  12`, ` AB12`, `AB\t12` rejected | Allowing spaces without checking their neighbours; `Trim()`; `char.IsWhiteSpace` (matches tabs and more) |
+| `ÄBC12` rejected | `char.IsLetterOrDigit` (accepts any Unicode letter) |
+| `AB12\n` rejected | Ending the regex with `$` instead of `\z` |
+| `ſAB12` rejected | Upper-casing *before* validating (`ſ` becomes an ASCII `S`) |
+
+Deliberately **not** tested: that `Make` returns what was passed in (tautological), and that two `Registration`s for the same plate are equal (record equality is C#; the normalisation tests cover what we control). `CarType` has no tests of its own: an enum has no behaviour, and its rules are tested through `Car`'s constructor.
+
+Red → green sequence:
+
+1. Tests written → compile error **CS0246**: `Car`, `CarType`, `Registration` not found.
+2. While planning the implementation, two edge cases were found (`AB12\n` and a non-ASCII letter that upper-cases to ASCII). Following the workflow rule, **test cases were added before any code**.
+3. Stubs → **29 failed**; the 24 existing tests still passed.
+4. Implementation → **all 55 passed**.
+5. **Each edge-case test was checked by putting its bug back** (`$` instead of `\z`; upper-casing first):
+   - `AB12\n` failed as intended.
+   - The original non-ASCII case, Turkish `ı`, **did not fail**. `ToUpperInvariant()` leaves `ı` unchanged (`ı` → `I` is a Turkish-culture rule, not an invariant one), so that test could never catch the bug. It was replaced with `ſ` (long s), which *does* become `S`, and the check then failed as intended.
+
+### C# lessons learned
+
+- **Entities vs value objects.** Entities have identity and change over time (`class`); value objects are defined by their values and never change (`record`). A record's hash code depends on its values, so a *mutable* record in a `HashSet` or `Dictionary` gets lost when it changes.
+- **`partial`.** One type defined in several places, joined at compile time. Mainly used so **source generators** can add code to your types. `[GeneratedRegex]` on a `partial` method makes the compiler generate the regex matcher during the build; the type containing it must be `partial` too (otherwise CS0751). `partial` can't extend types from other projects; extension methods do that (Phase 2).
+- **Regex in .NET:**
+  - `$` also matches just before a trailing `\n`. Use `\z` for "absolute end".
+  - `[A-Za-z]` is ASCII-only, but `RegexOptions.IgnoreCase` brings back Unicode surprises (e.g. the Kelvin sign `K` matching `k`).
+- **`char.IsLetterOrDigit` and `char.IsWhiteSpace` are Unicode-wide.** They accept `Ä`, tabs, non-breaking spaces and more. For rules about specific ASCII characters, match those characters explicitly.
+- **Validate raw input, then normalise.** `ToUpperInvariant()` can turn invalid input into valid-looking input (`ſ` → `S`).
+- **Invariant culture ≠ Turkish culture.** `ToUpperInvariant()` doesn't do the `ı` → `I` mapping; only culture-specific upper-casing (e.g. Turkish) does.
+- **Enum safety.** Start explicit values at 1 and check `Enum.IsDefined(value)` wherever an enum crosses into the domain.
+- **Built-in guard clauses.** `ArgumentException.ThrowIfNullOrWhiteSpace(make)` uses `[CallerArgumentExpression]`: the compiler passes the argument's text (`"make"`) as the parameter name, so no `nameof` is needed.
+- **`ArgumentOutOfRangeException`** is the convention for an argument of the right kind but outside the allowed values. Shouldly's `Should.Throw<T>` matches the exact type, so tests pin down which exception is thrown.
+- **Acronyms in names.** Two letters stay upper case (`IO`); three or more become PascalCase (`Suv`, `Html`).
+- **A property can share its type's name** (`public Registration Registration { get; }`), known as the "Color Color" case.
+- **Entity methods name business events.** `RecordArrivalIn(city)`, not `SetCurrentCity(city)`, and the setter is `private`.
+- **Test-side features:**
+  - **Optional parameters** must have compile-time-constant defaults, so `City? homeCity = null` + `homeCity ?? City.Auckland` is the workaround.
+  - **Named arguments** (`CreateCar(model: "")`) let each test change only the detail it's about.
+  - **Enum values are constants,** so `[InlineData((CarType)42)]` is allowed.
+- **Check that a test can fail.** Two of our edge-case tests looked equally convincing; putting the bug back showed one of them could never fail.

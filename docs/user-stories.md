@@ -21,6 +21,7 @@ The agreed behaviour of the system. Every domain rule we implement should trace 
 | Car location | Each car has a *home city* and a *current city* |
 | Cleaning break | 1 full day after a return-to-home-city rental: returned on the 13th → next pickup the 15th at the earliest |
 | Relocation break | 7 days after a one-way rental, while the car is returned to its home city. Replaces the cleaning break (cleaning happens during relocation): returned in Wellington on the 13th → bookable in Auckland from the 21st |
+| Registration plate | 1–6 characters including spaces: letters A–Z (lower case is accepted and stored upper case), digits 0–9, and single spaces inside the plate. Leading/trailing spaces and double spaces are rejected. Spaces are significant: `AB 12` and `AB12` are different plates |
 | Discounts | None |
 | Driver | Must hold a full driver's licence that is valid until the return date |
 

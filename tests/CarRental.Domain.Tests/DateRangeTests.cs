@@ -26,14 +26,6 @@ public class DateRangeTests
     }
 
     [Fact]
-    public void Days_WhenRangeCrossesLeapDay_IncludesFebruary29th()
-    {
-        var range = new DateRange(new DateOnly(2028, 2, 28), new DateOnly(2028, 3, 1));
-
-        range.Days.ShouldBe(2);
-    }
-
-    [Fact]
     public void Constructor_WhenEndEqualsStart_Throws()
     {
         Should.Throw<ArgumentException>(() => October(10, 10));
@@ -43,27 +35,6 @@ public class DateRangeTests
     public void Constructor_WhenEndBeforeStart_Throws()
     {
         Should.Throw<ArgumentException>(() => October(13, 10));
-    }
-
-    [Fact]
-    public void Equality_WhenSameDates_AreEqual()
-    {
-        // Two separate objects: a plain class would compare their references and say "not equal".
-        var first = October(10, 13);
-        var second = October(10, 13);
-
-        first.ShouldBe(second);
-        (first == second).ShouldBeTrue();
-    }
-
-    [Fact]
-    public void Equality_WhenDifferentDates_AreNotEqual()
-    {
-        var first = October(10, 13);
-        var second = October(10, 14);
-
-        first.ShouldNotBe(second);
-        (first != second).ShouldBeTrue();
     }
 
     // The fixed range is 10th → 15th: occupied days are 10th–14th, because End is exclusive.

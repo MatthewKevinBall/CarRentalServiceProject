@@ -100,6 +100,15 @@ CarRental.sln
 - Application tests: mock interfaces with NSubstitute only at architectural boundaries.
 - Integration tests: real Postgres via Testcontainers, app via `WebApplicationFactory`.
 
+### Test our application, not C#
+
+Every test must test **this application's behaviour**, never the behaviour of C#, .NET or a library.
+
+- **The heuristic:** a test is only valid if a *plausible wrong implementation of our code* would make it fail. If the only way to make it fail is to change a language feature (e.g. `record` → `class`) or for .NET itself to be broken, delete it.
+- Examples that fail the heuristic: asserting a `record`'s compiler-generated `==` / `Equals`; asserting `DateOnly` handles leap years; checking the same behaviour twice via a different route.
+- Value equality, immutability and similar type-level properties are tested only *through the behaviour that depends on them* (e.g. one-way pricing comparing two cities), in the tests for that behaviour.
+- **Teaching demonstrations are never part of the project.** When showing the developer how a C# feature behaves (equality, static initialisation order, `with` expressions, etc.), show it directly in the conversation or in a throwaway scratch file outside the repo, then remove it. Don't commit it as a test, and don't leave teaching comments in test code.
+
 ## Commands
 
 ```bash
