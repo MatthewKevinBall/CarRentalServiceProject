@@ -9,7 +9,7 @@ The domain model holds the business rules from [user-stories.md](user-stories.md
 | 1.3 | `Car` (with `CarType`, `Registration`) | ✅ Done |
 | 1.4 | Pricing (`Money`, `PriceList`, `PriceQuote`) | ✅ Done |
 | 1.5a | Driver (`Driver`, `DriverLicence`, `LicenceType`, `EmailAddress`) | ✅ Done |
-| 1.5b | `Booking` | — |
+| 1.5b | `Booking` (with `Itinerary`, `CarSelection`, `Result`, `BookingReference`, `BookingError`) | ✅ Done |
 
 ---
 
@@ -312,7 +312,7 @@ Worked example: SUV, Auckland → Wellington, 3 days = $315.00 + $100.00 + $31.5
 
 **`PriceList`.** The business's prices (4 daily rates, a one-way fee, a deposit percentage), supplied from outside the domain. It rejects a $0 daily rate and a deposit percentage outside 0–100.
 
-`Quote(CarType chargedType, DateRange period, City pickupCity, City dropOffCity)` returns a `PriceQuote`; it throws for an undefined car type.
+`Quote(CarType chargedType, DateRange period, City pickupCity, City dropOffCity)` returns a `PriceQuote`; it throws for an undefined car type. *(Later refactored to `Quote(CarType chargedType, Itinerary itinerary)`; see 1.5b.)*
 
 **`PriceQuote`: a `sealed record` with an `internal` constructor.** The US2 breakdown: `DailyRate`, `Days`, `RentalPrice`, `OneWayFee`, `Deposit`, and a calculated `Total`. Only `PriceList.Quote` can create one.
 
@@ -468,3 +468,162 @@ Red → green sequence:
 - **A record made of records** gets deep value equality automatically (not tested: that's C#).
 - **`new string('a', 101)`** repeats a character, like PHP's `str_repeat`.
 - **The `.editorconfig` applies to test code too.** It caught a naming inconsistency before any test ran.
+
+---
+
+## 1.5b `Booking` (with `Itinerary`, `CarSelection`, `Result`, `BookingReference`, `BookingError`)
+
+**Files:** `src/CarRental.Domain/Booking.cs`, `Itinerary.cs`, `CarSelection.cs`, `Result.cs`, `BookingReference.cs`, `BookingError.cs`; tests in `BookingTests.cs`, `ItineraryTests.cs`, `CarSelectionTests.cs`, `ResultTests.cs`, `BookingReferenceTests.cs`
+
+### What was built
+
+| Type | Kind | Purpose |
+|---|---|---|
+| `Itinerary` | positional `sealed record` | Where and when: `PickupCity`, `DropOffCity`, `Period`. `IsOneWay` is the single home of the one-way rule |
+| `CarSelection` | closed family of records | What the customer chose: `SpecificCar(Guid CarId)`, `OfType(CarType Type)`, `AnyAvailable`. `Matches(car)` and `ChargedTypeFor(car)` ("any available" → always the Standard rate) |
+| `BookingReference` | `sealed partial record` | Customer-facing reference: 6 characters with no look-alikes (no `0`/`O`, `1`/`I`/`L`); lower case accepted, stored upper case |
+| `BookingError` | `enum` | `RentalLongerThan30Days`, `PickupDateInPast`, `LicenceDoesNotPermitRental`, `CarNotBasedInPickupCity`, `CarDoesNotMatchSelection` |
+| `Result<TValue, TError>` | generic `sealed class` | A value, or every reason it couldn't be produced |
+| `Booking` | entity (`sealed class`) | A confirmed rental of one car |
+
+**`Booking`**
+
+| Member | Behaviour |
+|---|---|
+| `Booking.Create(reference, car, selection, itinerary, driver, priceList, today)` | Returns `Result<Booking, BookingError>`. Checks every rule and reports **all** failures. On success, prices the itinerary at the selection's charged type and stores that quote |
+| `Id`, `Reference`, `CarId`, `Itinerary`, `Driver`, `Price` | Fixed at creation; a booking never changes |
+| `BlockedPeriod` | `[Start, End + 1 + break)`: break = 1 day cleaning, or 7 days relocation if one-way |
+| `ClashesWith(other)` | Same car **and** overlapping blocked periods |
+
+| Rule | Error |
+|---|---|
+| More than 30 days | `RentalLongerThan30Days` |
+| Pickup before today | `PickupDateInPast` |
+| `driver.Licence.PermitsRentalUntil(returnDate)` is false | `LicenceDoesNotPermitRental` |
+| Car's **home** city ≠ pickup city | `CarNotBasedInPickupCity` |
+| `selection.Matches(car)` is false | `CarDoesNotMatchSelection` |
+
+### Design decisions
+
+| Decision | Chosen | Alternatives rejected | Why |
+|---|---|---|---|
+| Split the cycle | 1.5a Driver, then 1.5b Booking | One large cycle | Each cycle stays small enough to follow |
+| Business-rule failures | `Result<Booking, BookingError>` with all errors collected | Throw a domain exception | These are expected outcomes, not bugs. The return type shows that creation can fail, callers must handle it, and the customer hears about every problem at once. Programming bugs (undefined enums, invalid ranges) still throw |
+| `Result` implementation | Our own small generic type | ErrorOr, FluentResults | The domain has no package references |
+| Error type | `enum BookingError` | A record per error carrying details (e.g. the expiry date) | No user story needs details yet. Customer wording belongs in the web layer. Moving to records later is mechanical |
+| Customer's choice | Closed family of records (`CarSelection`) | An enum plus nullable `CarId?` / `CarType?` fields | Each kind carries exactly its own data, so nonsense combinations can't be expressed |
+| Selection rules | `Matches` / `ChargedTypeFor` on `CarSelection`, using pattern matching | A `switch` inside `Booking`; abstract methods overridden per subtype (polymorphism) | Keeps `Booking` focused and the selection rules in one readable place. Polymorphism would make a new kind a compile error until implemented, which is a reasonable alternative |
+| "Today" | A `DateOnly today` parameter | `TimeProvider` inside the domain | The domain stays pure and tests choose any date. Phase 2 works out "today in NZ" and passes it in |
+| Booking reference | Value object passed **in** to `Create` | Generated inside the domain | Generating one needs randomness and a uniqueness check against the database (Phases 2–3) |
+| Price | Quoted once and **stored** | Recalculated when needed | Later price changes must not alter an agreed booking |
+| Availability city | Car's **home** city | Current city | After a one-way rental, the car is relocated home (user stories) |
+| Clashes | Blocked periods overlap, same car | Rental periods overlap | One rule covers both directions: a new rental landing in another's break, and its own break running into the next rental |
+| Strongly-typed IDs | Still plain `Guid` | `CarId`, `BookingId` | `Create` takes a `Car` object, not an ID, so the mix-up risk is low inside the domain. Revisit in Phase 2 |
+| 9 parameters | Introduced `Itinerary` → 7 | Builder; a `BookingRequest` parameter object now | See below |
+
+### The 9-parameter smell and `Itinerary`
+
+The first design of `Create` had 9 parameters. The real smell wasn't the count but a **data clump**: `period`, `pickupCity` and `dropOffCity` appeared together in both `PriceList.Quote` and `Booking.Create`, and both would have worked out "is it one-way?" separately.
+
+Giving the clump a name (*Introduce Parameter Object*) produced `Itinerary`: a real business concept with behaviour (`IsOneWay`). `Create` went to 7 parameters and `Quote` from 4 to 2. The remaining parameters are genuinely different things, so they were left alone; Phase 2's "create booking" command will group the customer's request naturally. Builders were rejected because every parameter is required.
+
+**When to fix a smell like this:** fix it at design time if you can see it (the API shapes every test), otherwise refactor later under the protection of the tests.
+
+`Itinerary` is a **positional** record, unlike `DateRange` and `Money`: it has no rules of its own, so a `with` expression skipping the constructor can't create an invalid one.
+
+### Refactoring `PriceList.Quote`: expand / migrate / contract
+
+`Quote(chargedType, period, pickupCity, dropOffCity)` became `Quote(chargedType, itinerary)` without the build ever going red:
+
+1. **Expand:** add the new `Quote(CarType, Itinerary)`; the old one delegates to it. → green
+2. **Migrate:** move every caller (the pricing tests) to the new method. → green
+3. **Contract:** delete the old method. → green
+
+In a larger codebase step 2 can take a long time; marking the old method `[Obsolete("Use …")]` gives every remaining caller a compiler warning. The pricing tests changed **shape** (they now build an `Itinerary`) but not **meaning**: every one still checks the same rule. Putting bugs back afterwards confirmed it: `Quote` ignoring `IsOneWay` and `IsOneWay` inverted were each caught by that layer's own tests.
+
+### How the tests were designed
+
+Each failure test asserts the **exact** list of errors (`ShouldBe([BookingError.X])`), so one problem can't cause a knock-on second error.
+
+| Test | Wrong code it catches |
+|---|---|
+| `IsOneWay` true / false (drop-off from `City.FromCode("akl")`) | Always true/false; wrong comparison. City equality is now tested here |
+| `Result`: success has no errors; failure keeps all errors | `null` errors; keeping only the first |
+| `Result.Value` on failure throws | Quietly returning `default` |
+| `Result.Failure([])` throws | A failure that can't say why |
+| Reference: no `0`, `O`, `1`, `I`, `L`, also in lower case; `\n`; `ſ` | Wrong alphabet; `$`; upper-casing first |
+| Specific car matches only that car; type matches only that type; "any" matches all | Comparing the wrong thing |
+| "Any available" charges Standard **even for an Economy car** | A plausible "fair" `min(...)` rule that isn't the business's |
+| 30 days OK / 31 fails | `>=` instead of `>` |
+| Pickup today OK / yesterday fails | Rejecting same-day bookings |
+| Licence expiring the 12th, rental 10th → 13th, fails | Checking the licence against the **pickup** date |
+| Car based in Auckland but currently in Wellington succeeds | Checking `CurrentCity` instead of `HomeCity` |
+| An SUV booked as "any available" is charged 20, not 30 | Pricing at `car.Type`, ignoring the selection |
+| One-way fee present in the stored price | Quoting a made-up same-city trip |
+| Several problems → all reported | Stopping at the first failure |
+| Blocked period +1 cleaning day / +7 relocation days | Forgetting the return day; ignoring one-way |
+| `ClashesWith` rows: during the rental, on the cleaning day, the day after, returned the day before, returned 2 days before | Missing the break; off-by-one at either edge |
+| Different car never clashes | Comparing dates but not cars |
+| After a one-way rental, the 20th clashes and the 21st doesn't | Using the cleaning break for one-way rentals |
+
+Red → green sequence:
+
+1. `Itinerary`: tests → CS0246 → stub (2 failed) → implementation (green) → `Quote` refactor (green throughout).
+2. Booking tests written; a placeholder row left in the `ClashesWith` theory while drafting was replaced before anything ran. Compile-checked against temporary stand-ins.
+3. While implementing, a claim made during the walkthrough was **tested and found wrong**: a record with a private constructor is *not* fully closed, because records must keep a `protected` copy constructor that an outside record can chain to. The code handles unknown kinds explicitly (`NotSupportedException`) instead of assuming they can't exist.
+4. Stubs → **59 failed**; the 129 existing tests still passed.
+5. Implementation → **all 190 passed** (188 Domain + 2 placeholders).
+6. **Each tricky test was checked by putting its bug back.** The first attempt's script used `for f in $FILES` under **zsh**, which doesn't split unquoted variables on spaces, so the backups and restores silently failed and the bugs piled up. The files were restored by hand, and the checks re-run under `bash` with a comparison against the backups after every step. All 12 bugs were then caught:
+
+| Bug put back | Caught by |
+|---|---|
+| 30-day limit `>=` | 30-day boundary test |
+| Same-day pickup rejected | Pickup-today test |
+| Licence checked against the pickup date | Licence-expires-during-rental test |
+| `CurrentCity` instead of `HomeCity` | Based-here-but-currently-elsewhere test |
+| Only the first error reported | Several-problems test |
+| Priced at `car.Type` | "Any available" pricing test |
+| Blocked period forgets the return day | Both blocked-period tests + 3 clash rows |
+| `ClashesWith` ignores the car | Different-car test |
+| "Any available" at the car's own rate | `CarSelection` theory + booking pricing test |
+| `Value` returns default on failure | `Failure_AccessingValue_Throws` |
+| Failure allowed with no errors | `Failure_WithNoErrors_Throws` |
+| Reference alphabet allows `L` | `KLQM4X` row |
+
+### C# lessons learned
+
+- **Static factory methods** (`Booking.Create`, `Result.Success` / `Failure`) can return anything, including a result object; a constructor can only produce an instance or throw. Pair them with a private constructor so the factory is the only way in.
+- **Generics.** `Result<TValue, TError>` is checked at compile time, and unlike TypeScript the type arguments **exist at runtime** (`List<int>` and `List<string>` are different types). `TValue?` on an unconstrained type parameter means "may hold `default`".
+- **The `!` operator** is justified only when you know something the compiler can't see, and it deserves a comment saying what (here: a success always received a real value).
+- **Spread** `[.. errors]` copies a sequence into a collection. Copying a caller's `IEnumerable` once protects against re-running a lazy LINQ query (Phase 2 topic).
+- **Pattern matching.** `this switch { SpecificCar specific => … }` checks the runtime type and gives a typed variable; `SpecificCar or OfType => …` combines patterns. Switch expressions also support constant, relational (`<= 30`), logical (`and`/`or`/`not`), property (`{ Type: CarType.Suv }`), tuple and list patterns, and the same patterns work with `is`. Unlike PHP's `match`, they go beyond `===` comparisons; unlike JS `switch`, they never fall through.
+- **Closed families of records** are C#'s usual stand-in for discriminated unions. Nested types can use the outer type's private constructor, which prevents *accidental* subtypes, but a record's required `protected` copy constructor means it isn't airtight.
+- **Pattern matching vs polymorphism.** A `switch` keeps all rules in one place but only fails at runtime for a new kind; abstract methods make a new kind a compile error until implemented.
+- **The colon** means "inherits from / implements" (`record SpecificCar(...) : CarSelection`), covering both PHP's `extends` and `implements`. One base class at most, then any number of interfaces.
+- **Positional records** are fine when there are no rules to protect (`Itinerary`); use an explicit constructor + get-only properties when there are (`DateRange`, `Money`).
+- **`??=`** assigns only if the variable is currently null (as in PHP 7.4+).
+- **Expand / migrate / contract** changes a widely used method without ever breaking the build.
+- **Shell scripts:** zsh doesn't split unquoted variables on spaces the way bash does. Check that any automated "safety" step actually did what it claims.
+
+---
+
+## Phase 1 summary
+
+The domain model is complete: **188 domain tests**, no references to databases, web frameworks or packages.
+
+| Concept | Kind | Key rule |
+|---|---|---|
+| `DateRange` | value object (`sealed record`) | Half-open `[Start, End)`; `Days`; `Overlaps` |
+| `City` | smart enum | Three cities; case-insensitive `FromCode` |
+| `Car` | entity | Identity by `Guid`; `HomeCity` fixed, `CurrentCity` changes via `RecordArrivalIn` |
+| `CarType`, `LicenceType`, `BookingError` | enums | Start at 1; checked with `Enum.IsDefined` where they enter the domain |
+| `Registration`, `DriverLicence`, `BookingReference` | value objects | Strict ASCII formats; validate, then normalise |
+| `Money` | `readonly record struct` | Whole cents, never negative; `PercentageRoundedUp` |
+| `PriceList` / `PriceQuote` | class / record | Rate × days + one-way fee + deposit (ceiling) |
+| `EmailAddress`, `Driver` | value objects | Email-shaped; strict whitespace |
+| `Itinerary` | positional record | `IsOneWay` |
+| `CarSelection` | closed record family | Matching and the "any available → Standard" rule |
+| `Result<TValue, TError>` | generic class | Business-rule failures without exceptions |
+| `Booking` | entity | All rental rules; blocked period; `ClashesWith` |
+
+**Carried into Phase 2:** working out "today in NZ" with `TimeProvider`; generating booking references; availability search and double-booking checks using `ClashesWith`; whether to introduce strongly-typed IDs; the "create booking" command that groups the customer's request.

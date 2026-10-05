@@ -31,16 +31,17 @@ public sealed class PriceList
         _depositPercentage = depositPercentage;
     }
 
-    public PriceQuote Quote(CarType chargedType, DateRange period, City pickupCity, City dropOffCity)
+    public PriceQuote Quote(CarType chargedType, Itinerary itinerary)
     {
         var dailyRate = RateFor(chargedType);
-        var rentalPrice = dailyRate * period.Days;
-        var oneWayFee = dropOffCity == pickupCity ? Money.Zero : _oneWayFee;
+        var days = itinerary.Period.Days;
+        var rentalPrice = dailyRate * days;
+        var oneWayFee = itinerary.IsOneWay ? _oneWayFee : Money.Zero;
 
         // The deposit is on the rental price only, never on the one-way fee.
         var deposit = rentalPrice.PercentageRoundedUp(_depositPercentage);
 
-        return new PriceQuote(dailyRate, period.Days, rentalPrice, oneWayFee, deposit);
+        return new PriceQuote(dailyRate, days, rentalPrice, oneWayFee, deposit);
     }
 
     private Money RateFor(CarType chargedType) => chargedType switch

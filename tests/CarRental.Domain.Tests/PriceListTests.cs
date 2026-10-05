@@ -15,7 +15,9 @@ public class PriceListTests
         decimal depositPercentage = 10m) =>
         new(new Money(economy), new Money(standard), new Money(suv), new Money(premium), new Money(oneWayFee), depositPercentage);
 
-    private static DateRange Days(int days) => new(new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 1).AddDays(days));
+    // A trip from Auckland for the given number of days; one-way when a different drop-off city is given.
+    private static Itinerary Trip(int days, City? dropOffCity = null) =>
+        new(City.Auckland, dropOffCity ?? City.Auckland, new DateRange(new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 1).AddDays(days)));
 
     // ---- Constructor rules ----
 
@@ -54,7 +56,7 @@ public class PriceListTests
     [InlineData(CarType.Premium, 40)]
     public void Quote_DailyRate_IsTheChargedTypesRate(CarType chargedType, int expectedRate)
     {
-        var quote = CreatePriceList().Quote(chargedType, Days(3), City.Auckland, City.Auckland);
+        var quote = CreatePriceList().Quote(chargedType, Trip(3));
 
         quote.DailyRate.ShouldBe(new Money(expectedRate));
     }
@@ -63,13 +65,13 @@ public class PriceListTests
     public void Quote_WithUndefinedCarType_Throws()
     {
         Should.Throw<ArgumentOutOfRangeException>(
-            () => CreatePriceList().Quote((CarType)42, Days(3), City.Auckland, City.Auckland));
+            () => CreatePriceList().Quote((CarType)42, Trip(3)));
     }
 
     [Fact]
     public void Quote_RentalPrice_IsDailyRateTimesDays()
     {
-        var quote = CreatePriceList(suv: 30m).Quote(CarType.Suv, Days(4), City.Auckland, City.Auckland);
+        var quote = CreatePriceList(suv: 30m).Quote(CarType.Suv, Trip(4));
 
         quote.Days.ShouldBe(4);
         quote.RentalPrice.ShouldBe(new Money(120m));
@@ -78,7 +80,7 @@ public class PriceListTests
     [Fact]
     public void Quote_WhenDropOffCityDiffers_ChargesOneWayFee()
     {
-        var quote = CreatePriceList(oneWayFee: 7m).Quote(CarType.Suv, Days(3), City.Auckland, City.Wellington);
+        var quote = CreatePriceList(oneWayFee: 7m).Quote(CarType.Suv, Trip(3, dropOffCity: City.Wellington));
 
         quote.OneWayFee.ShouldBe(new Money(7m));
     }
@@ -86,10 +88,7 @@ public class PriceListTests
     [Fact]
     public void Quote_WhenDropOffCityIsPickupCity_ChargesNoOneWayFee()
     {
-        // The drop-off city arrives as a code from the booking form, the pickup city as a known instance.
-        var dropOff = City.FromCode("akl");
-
-        var quote = CreatePriceList(oneWayFee: 7m).Quote(CarType.Suv, Days(3), City.Auckland, dropOff);
+        var quote = CreatePriceList(oneWayFee: 7m).Quote(CarType.Suv, Trip(3));
 
         quote.OneWayFee.ShouldBe(Money.Zero);
     }
@@ -99,7 +98,7 @@ public class PriceListTests
     {
         // One-way, so a fee exists that the deposit must ignore: 10% of 90, not of 97.
         var quote = CreatePriceList(suv: 30m, oneWayFee: 7m, depositPercentage: 10m)
-            .Quote(CarType.Suv, Days(3), City.Auckland, City.Wellington);
+            .Quote(CarType.Suv, Trip(3, dropOffCity: City.Wellington));
 
         quote.Deposit.ShouldBe(new Money(9m));
     }
@@ -109,7 +108,7 @@ public class PriceListTests
     {
         // 10% of 164.81 is 16.481: rounding to the nearest cent would give 16.48.
         var quote = CreatePriceList(economy: 164.81m, depositPercentage: 10m)
-            .Quote(CarType.Economy, Days(1), City.Auckland, City.Auckland);
+            .Quote(CarType.Economy, Trip(1));
 
         quote.Deposit.ShouldBe(new Money(16.49m));
     }
@@ -119,7 +118,7 @@ public class PriceListTests
     {
         // 90 rental + 7 one-way + 9 deposit
         var quote = CreatePriceList(suv: 30m, oneWayFee: 7m, depositPercentage: 10m)
-            .Quote(CarType.Suv, Days(3), City.Auckland, City.Wellington);
+            .Quote(CarType.Suv, Trip(3, dropOffCity: City.Wellington));
 
         quote.Total.ShouldBe(new Money(106m));
     }
@@ -136,7 +135,7 @@ public class PriceListTests
             oneWayFee: new Money(100m),
             depositPercentage: 10m);
 
-        var quote = priceList.Quote(CarType.Suv, Days(3), City.Auckland, City.Wellington);
+        var quote = priceList.Quote(CarType.Suv, Trip(3, dropOffCity: City.Wellington));
 
         quote.Total.ShouldBe(new Money(446.50m));
     }
